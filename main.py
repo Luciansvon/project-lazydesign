@@ -11,6 +11,7 @@ from src.config import settings
 from src.database import init_db, SessionLocal, Transaction, Budget
 from src.finance_analyzer import FinanceAnalyzer
 from src.assistant import PersonalAssistant
+from src.ai_service import get_ai_service
 
 # Setup logging
 logging.basicConfig(
@@ -440,12 +441,15 @@ def main():
     app.add_handler(CommandHandler("add_expense", add_expense))
     app.add_handler(CommandHandler("summary", summary))
     app.add_handler(CommandHandler("health", health_score))
+    app.add_handler(CommandHandler("ai_analysis", ai_analysis))
+    app.add_handler(CommandHandler("ask", ask_ai))
     
     # Task commands
     app.add_handler(CommandHandler("add_task", add_task))
     app.add_handler(CommandHandler("my_tasks", my_tasks))
     app.add_handler(CommandHandler("complete_task", complete_task_cmd))
     app.add_handler(CommandHandler("productivity", productivity))
+    app.add_handler(CommandHandler("ai_productivity", ai_productivity))
     
     # Callback handler
     app.add_handler(MessageHandler(filters.Regex("^/(.*)"), help_command))
@@ -456,6 +460,110 @@ def main():
     print("Tekan Ctrl+C untuk berhenti.\n")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+# ========== AI-POWERED COMMANDS ==========
+
+async def ai_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Command /ai_analysis - Analisis keuangan mendalam dengan AI"""
+    db = get_db_session()
+    try:
+        user_id = str(update.effective_user.id)
+        analyzer = FinanceAnalyzer(db)
+        ai_service = get_ai_service()
+        
+        # Get summary and transactions
+        summary = analyzer.get_summary(user_id, days=30)
+        transactions = analyzer.get_transactions(user_id, days=30)
+        
+        if summary['transaction_count'] == 0:
+            await update.message.reply_text(
+                "❌ Belum ada data transaksi.\n\n"
+                "Gunakan /add_income dan /add_expense untuk mencatat transaksi terlebih dahulu."
+            )
+            return
+        
+        await update.message.reply_text("🤖 Sedang menganalisis keuangan Anda dengan AI...")
+        
+        # Get AI analysis
+        analysis = ai_service.analyze_finances(transactions, summary)
+        
+        await update.message.reply_text(analysis, parse_mode='Markdown')
+    finally:
+        db.close()
+
+async def ask_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Command /ask - Tanya apapun ke AI assistant"""
+    try:
+        user_id = str(update.effective_user.id)
+        ai_service = get_ai_service()
+        
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Format: /ask <pertanyaan Anda>\n\n"
+                "Contoh:\n"
+                "- /ask Bagaimana cara menabung lebih efektif?\n"
+                "- /ask Tips mengatur gaji 5 juta per bulan\n"
+                "- /ask Cara mengurangi pengeluaran makanan?"
+            )
+            return
+        
+        question = " ".join(context.args)
+        
+        await update.message.reply_text("🤖 Sedang memikirkan jawaban...")
+        
+        # Get context from database (optional)
+        db = get_db_session()
+        try:
+            analyzer = FinanceAnalyzer(db)
+            summary = analyzer.get_summary(user_id, days=30)
+            context_info = f"""Kondisi keuangan user (30 hari terakhir):
+- Pemasukan: Rp {summary.get('total_income', 0):,.0f}
+- Pengeluaran: Rp {summary.get('total_expense', 0):,.0f}
+- Saldo: Rp {summary.get('net_balance', 0):,.0f}
+"""
+        finally:
+            db.close()
+        
+        response = ai_service.chat(question, context=context_info)
+        await update.message.reply_text(response, parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"❌ Terjadi kesalahan: {str(e)}")
+
+async def ai_productivity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Command /ai_productivity - Analisis produktivitas dengan AI"""
+    db = get_db_session()
+    try:
+        user_id = str(update.effective_user.id)
+        assistant = PersonalAssistant(db)
+        ai_service = get_ai_service()
+        
+        tasks = assistant.get_tasks(user_id, completed=False)
+        productivity_data = assistant.get_productivity_score(user_id)
+        
+        if productivity_data['total'] == 0:
+            await update.message.reply_text(
+                "❌ Belum ada task.\n\n"
+                "Gunakan /add_task untuk membuat task pertama Anda!"
+            )
+            return
+        
+        await update.message.reply_text("🤖 Sedang menganalisis produktivitas Anda...")
+        
+        # Convert tasks to dict format for AI
+        tasks_dict = []
+        for task in tasks:
+            tasks_dict.append({
+                'title': task.title,
+                'priority': task.priority,
+                'completed': task.completed,
+                'due_date': task.due_date.isoformat() if task.due_date else None
+            })
+        
+        analysis = ai_service.analyze_productivity(tasks_dict, productivity_data)
+        
+        await update.message.reply_text(analysis, parse_mode='Markdown')
+    finally:
+        db.close()
 
 if __name__ == "__main__":
     main()
